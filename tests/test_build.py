@@ -1,4 +1,4 @@
-"""macOS single-file packaging and archive contents without a Mac toolchain."""
+"""Packaging and archive contents for macOS and Linux without a host toolchain."""
 
 import os
 import tempfile
@@ -95,3 +95,77 @@ class BuildTests(unittest.TestCase):
                     {f"{name}/{name}", f"{name}/README.md", f"{name}/LICENSE"},
                 )
                 self.assertEqual(archive.extractfile(f"{name}/{name}").read(), b"fake executable")
+
+    def test_linux_bundles_libusb_and_packages_appimage_with_desktop_entry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            library = root / "libusb-1.0.so.0"
+            library.write_bytes(b"fake libusb")
+            (root / "README.md").write_text("Readme", encoding="utf-8")
+            (root / "LICENSE").write_text("License", encoding="utf-8")
+            icons = root / "assets" / "icons"
+            icons.mkdir(parents=True)
+            for size in (128, 256, 512):
+                (icons / f"dji-goggles-bridge-icon-{size}.png").write_bytes(b"fake png")
+            name = "dji-goggles-bridge-linux"
+            executable = root / "dist/linux" / name
+            appimage = root / "dist" / f"{name}-x86_64.AppImage"
+            fake_tool = root / "appimagetool"
+            commands = []
+
+            def run(command, env=None):
+                commands.append((command, env))
+                if "PyInstaller" in command:
+                    executable.parent.mkdir(parents=True)
+                    executable.write_bytes(b"fake executable")
+                elif (
+                    str(command[0]).endswith("appimagetool")
+                    or "appimagetool" in Path(command[0]).name
+                ):
+                    appimage.parent.mkdir(parents=True, exist_ok=True)
+                    appimage.write_bytes(b"fake appimage")
+
+            with (
+                patch.object(build, "ROOT", root),
+                patch.object(build.sys, "platform", "linux"),
+                patch.object(build.platform, "machine", return_value="x86_64"),
+                patch.object(build.ctypes.util, "find_library", return_value=str(library)),
+                patch.object(build, "appimagetool", return_value=str(fake_tool)),
+                patch.object(build, "run", side_effect=run),
+            ):
+                self.assertEqual(build.main(["--skip-install"]), 0)
+
+            package_command = next(command for command, _ in commands if "PyInstaller" in command)
+            self.assertIn(str(root / "src" / "apps" / "linux_app.py"), package_command)
+            binary = package_command[package_command.index("--add-binary") + 1]
+            source, destination = binary.rsplit(os.pathsep, 1)
+            self.assertTrue(Path(source).samefile(library))
+            self.assertEqual(destination, ".")
+
+            appimage_call = next(
+                (command, env)
+                for command, env in commands
+                if "appimagetool" in Path(command[0]).name
+            )
+            appimage_command, appimage_env = appimage_call
+            appdir = Path(appimage_command[1])
+            self.assertEqual(appdir, root / "build" / "appimage" / f"{name}.AppDir")
+            self.assertEqual(appimage_command[2], str(appimage))
+            self.assertEqual(appimage_env, {**build.os.environ, "APPIMAGE_EXTRACT_AND_RUN": "1"})
+
+            self.assertEqual((appdir / "usr" / "bin" / name).read_bytes(), b"fake executable")
+            self.assertTrue((appdir / "dji-goggles-bridge.png").is_file())
+            self.assertIn(
+                'exec "$APPDIR/usr/bin/' + name + '" "$@"', (appdir / "AppRun").read_text()
+            )
+            desktop = (appdir / "dji-goggles-bridge.desktop").read_text()
+            self.assertIn("Name=DJI Goggles Bridge", desktop)
+            self.assertIn(f"Exec={name}", desktop)
+            for size in (128, 256, 512):
+                self.assertTrue(
+                    (
+                        appdir
+                        / f"usr/share/icons/hicolor/{size}x{size}/apps/dji-goggles-bridge.png"
+                    ).is_file()
+                )
+            self.assertEqual(appimage.read_bytes(), b"fake appimage")

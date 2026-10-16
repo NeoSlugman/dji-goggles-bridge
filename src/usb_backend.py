@@ -16,9 +16,11 @@ def load_usb():
         bundled = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
         paths = [
             *sorted(bundled.glob("libusb-1.0*.dylib")),
+            *sorted(bundled.glob("libusb-1.0*.so*")),
             bundled / "libusb-1.0.dll",
             Path("/opt/homebrew/lib/libusb-1.0.dylib"),
             Path("/usr/local/lib/libusb-1.0.dylib"),
+            Path("/usr/local/lib/libusb-1.0.so.0"),
         ]
         for path in paths:
             if path.is_file():

@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+squashfs-root/
 .ruff_cache/
 .local/
 *.h264

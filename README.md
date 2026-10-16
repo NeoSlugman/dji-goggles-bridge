@@ -4,7 +4,7 @@ Watch your **DJI Goggles 3** or **DJI FPV Goggles V2** video on your computer,
 or **live stream it with OBS**.
 Add your FPV view to an OBS scene with overlays, a webcam, and your microphone.
 Other programs can also receive video from the frame server.
-Download a ready-to-run Windows or Mac app. The Python SDK supports Windows, macOS, and Linux.
+Download a ready-to-run Windows, Mac, or Linux app. The Python SDK supports Windows, macOS, and Linux.
 
 Free, software-only, and CC BY 4.0 licensed (open-source with attribution).
 No proprietary app, firmware, or license keys.
@@ -21,6 +21,7 @@ under **Assets**. Choose the application archive, rather than the source-code do
 | Windows, 64-bit        | `dji-goggles-bridge-windows-x86_64.zip`  |
 | Mac with Apple Silicon | `dji-goggles-bridge-macos-arm64.tar.gz`  |
 | Mac with Intel         | `dji-goggles-bridge-macos-x86_64.tar.gz` |
+| Linux, 64-bit          | `dji-goggles-bridge-linux-x86_64.AppImage` |
 
 **Windows:** extract the ZIP, then double-click `dji-goggles-bridge-windows.exe`.
 
@@ -30,8 +31,18 @@ under **Assets**. Choose the application archive, rather than the source-code do
 ./dji-goggles-bridge-macos
 ```
 
+**Linux:** download the AppImage, make it executable, and run it:
+
+```sh
+chmod +x dji-goggles-bridge-linux-x86_64.AppImage
+./dji-goggles-bridge-linux-x86_64.AppImage
+```
+
+If your system lacks FUSE, run with `--appimage-extract-and-run` instead.
+
 The apps include everything they need: **no Python installation required**.
-The Mac app also includes libusb; you don't need Homebrew to use it.
+The Mac and Linux apps also include libusb; you don't need Homebrew or
+`apt install libusb-1.0-0` to use them.
 If macOS blocks the first launch, follow [Apple's opening instructions](https://support.apple.com/en-us/102445).
 
 ## Prepare your goggles
@@ -50,8 +61,10 @@ Then install **WinUSB** using Zadig: enable
 (libusb-win32), replace that interface's driver with **WinUSB**. Verify that exact interface before
 replacing its driver. The bridge does not install this driver automatically.
 Leave the other composite interfaces alone. V2 needs no IP address setup.
-On **macOS**, the downloaded app includes libusb. On **Linux**, install libusb
-and grant your user access to USB `2ca3:001f` through a udev rule.
+On **macOS** and **Linux (AppImage)**, the downloaded app includes libusb; from
+source, install it with `sudo apt install libusb-1.0-0` or `sudo dnf install
+libusb1`. Rootless USB access comes from the udev rules the app installs during
+its one-time setup (see [Linux](#linux)), then replug the goggles.
 
 The Windows launcher detects V2, and the Mac interactive menu detects it too.
 For direct commands, select the model explicitly:
@@ -88,6 +101,12 @@ For Goggles 3 on Windows, the app checks the connection first and offers a one-t
 Answer **Y**, then approve the **Windows permission prompt (UAC)**. Setup affects only
 the goggles connection. If a restart is needed, the app tells you; it won't restart
 Windows automatically. macOS doesn't need this setup.
+
+On **Linux**, the OTG data cable appears as a USB network interface (name varies per
+port, e.g. `enp0s20f0u5`). Running the app as root offers a one-time setup that
+assigns `192.168.60.1/24` and installs udev rules, so the address is re-applied on
+every plug-in and NetworkManager leaves the link alone. Without root, assign the
+address yourself: `sudo ip addr add 192.168.60.1/24 dev <interface>`.
 
 ## Watch video
 
@@ -220,6 +239,43 @@ For macOS USB access, install `.[decode,usb]` and install libusb with `brew inst
 Those extra steps are for SDK developers; the downloaded Mac app already includes them.
 For V2 on Windows/Linux, also install `.[decode,usb]`; Windows includes libusb
 through `libusb-package`, but still requires WinUSB on the video interface.
+On Linux, install the system libusb library (`sudo apt install libusb-1.0-0` or
+`sudo dnf install libusb1`); rootless V2 access uses the app-installed udev rules.
+
+### Linux
+
+The packaged **AppImage** includes everything (Python runtime, video
+dependencies, libusb) — no Python or libusb install needed:
+
+```sh
+chmod +x dji-goggles-bridge-linux-x86_64.AppImage
+./dji-goggles-bridge-linux-x86_64.AppImage          # interactive menu
+./dji-goggles-bridge-linux-x86_64.AppImage viewer --model v2
+./dji-goggles-bridge-linux-x86_64.AppImage server --model v2
+./dji-goggles-bridge-linux-x86_64.AppImage webrtc
+```
+
+If your system lacks FUSE, run with `--appimage-extract-and-run` instead.
+The same three modes work as on other platforms; the menu auto-detects a
+plugged V2 and skips the Goggles 3 network preflight for it.
+
+Prefer running from source instead:
+
+```sh
+python -m pip install ".[apps]"
+goggles-linux                 # interactive menu
+goggles-linux viewer --model v2
+goggles-linux server --model v2
+```
+
+For V2 from source, install libusb first
+(`sudo apt install libusb-1.0-0` or `sudo dnf install libusb1`).
+
+One-time setup: run the app as root. When a Goggles 3 is connected and the link
+address is missing, it offers to install the udev rules (rootless V2 access,
+G3 auto-IP on every plug-in, NetworkManager left alone) and assign
+`192.168.60.1/24` now. A viewer window needs a desktop session (X11/Wayland);
+headless boxes should use `server` or `webrtc`.
 
 Use the installed SDK, or copy `src/dji_goggles_bridge.py`, `decoder.py` and the
 model modules into your code. USB also needs `usb_backend.py`, plus `rndis.py`
@@ -274,7 +330,8 @@ For raw network UDP, `pip install .` is enough; no video dependencies are requir
 A chunk is **not necessarily one picture**. Concatenate chunks for the Annex B stream.
 `decode_h264(chunks)` also accepts another source.
 
-For Goggles 3, `auto` uses userspace USB on macOS and network UDP on Windows/Linux.
+For Goggles 3, `auto` uses userspace USB on macOS and network UDP on Windows/Linux;
+on Linux the kernel's RNDIS driver (usually `usb0`) provides the network interface.
 For network UDP, configure the goggles interface as `192.168.60.1/24`, with no gateway;
 the Windows app can perform that setup. Import `ConnectionConfig` to override addresses,
 ports, timeouts, or select `transport="usb"` / `transport="udp"`.
@@ -310,12 +367,17 @@ python -m build
 
 Build **Windows on Windows** with `scripts\build_windows.cmd`.
 Build **macOS on macOS** with `brew install libusb`, then `sh scripts/build_macos.sh`.
+Build **Linux on Linux** with `sh scripts/build_linux.sh` (system libusb required:
+`sudo apt install libusb-1.0-0` or `sudo dnf install libusb1`).
 [scripts/build.py](scripts/build.py) creates the executable and archive under `dist/`;
-use `--skip-install` with dependencies already installed.
+use `--skip-install` with dependencies already installed. On Linux it packages the
+executable as an AppImage (the `appimagetool` binary is fetched automatically if not
+on PATH).
 
-CI runs tests and builds Windows x64, Mac Apple Silicon, and Mac Intel applications.
-Publishing a GitHub Release builds its tag and attaches the three application archives
-under **Assets** once the builds finish. The builds are not notarized for macOS.
+CI runs tests and builds Windows x64, Mac Apple Silicon, Mac Intel, and Linux x64
+applications. Publishing a GitHub Release builds its tag and attaches the four
+application archives under **Assets** once the builds finish. The builds are not
+notarized for macOS.
 
 ## License and credit
 

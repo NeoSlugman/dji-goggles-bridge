@@ -19,6 +19,8 @@ jobs:
             artifact: macos-arm64
           - os: macos-15-intel
             artifact: macos-x86_64
+          - os: ubuntu-latest
+            artifact: linux-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +30,9 @@ jobs:
       - name: Install libusb for the macOS bundle
         if: runner.os == 'macOS'
         run: brew install libusb
+      - name: Install libusb for the Linux AppImage
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libusb-1.0-0
       - name: Build and check the console launcher
         run: python scripts/build.py
       - uses: actions/upload-artifact@v4
@@ -36,4 +41,5 @@ jobs:
           path: |
             dist/*.zip
             dist/*.tar.gz
+            dist/*.AppImage
           if-no-files-found: error

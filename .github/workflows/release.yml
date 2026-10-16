@@ -37,6 +37,7 @@ jobs:
             release-assets/dji-goggles-bridge-windows-x86_64.zip
             release-assets/dji-goggles-bridge-macos-arm64.tar.gz
             release-assets/dji-goggles-bridge-macos-x86_64.tar.gz
+            release-assets/dji-goggles-bridge-linux-x86_64.AppImage
           )
           for asset in "${assets[@]}"; do
             test -s "$asset"
