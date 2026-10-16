@@ -3,6 +3,7 @@
 import io
 import plistlib
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -110,6 +111,10 @@ class InventoryTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     diagnostics.usb_device_count("linux")
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "Fake sysfs layout uses a ':' in the RNDIS interface name, illegal on Windows",
+    )
     def test_linux_goggles_interface_finds_the_rndis_net_device(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
