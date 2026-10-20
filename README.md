@@ -104,9 +104,10 @@ Windows automatically. macOS doesn't need this setup.
 
 On **Linux**, the OTG data cable appears as a USB network interface (name varies per
 port, e.g. `enp0s20f0u5`). Running the app as root offers a one-time setup that
-assigns `192.168.60.1/24` and installs udev rules, so the address is re-applied on
-every plug-in and NetworkManager leaves the link alone. Without root, assign the
-address yourself: `sudo ip addr add 192.168.60.1/24 dev <interface>`.
+brings the link up, assigns `192.168.60.1/24` and installs udev rules, so the
+link is re-applied on every plug-in and NetworkManager leaves it alone. Without
+root, do both yourself: `sudo ip link set <interface> up` then `sudo ip addr
+add 192.168.60.1/24 dev <interface>` — an address on a down link is unreachable.
 
 ## Watch video
 

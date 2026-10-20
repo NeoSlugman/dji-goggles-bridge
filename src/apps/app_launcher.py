@@ -137,6 +137,25 @@ def _linux_local_ip_configured(ip: str) -> bool:
         sock.close()
 
 
+# IFF_UP from <net/if.h>: bit 0 of the netdev flags file.
+IFF_UP_FLAG = 0x1
+
+
+def _linux_goggles_link_up(interface: str, sysfs_root: Path | None = None) -> bool:
+    """True when the goggles RNDIS interface is administratively up.
+
+    An IP on a down link is unreachable (the bind test passes), so the
+    preflight checks the flag, not just the address.
+    """
+    root = sysfs_root or Path("/sys")
+    flags_file = root / "class" / "net" / interface / "flags"
+    try:
+        flags = int(flags_file.read_text().strip(), 16)
+    except (OSError, ValueError):
+        return False
+    return bool(flags & IFF_UP_FLAG)
+
+
 def _is_root() -> bool:
     geteuid = getattr(os, "geteuid", None)
     return bool(geteuid and geteuid() == 0)
@@ -144,9 +163,11 @@ def _is_root() -> bool:
 
 # udev rules installed by the one-time Linux setup: rootless V2 USB access,
 # G3 auto-IP on every plug-in, and NM_UNMANAGED so NetworkManager leaves the link.
+# %k is the kernel name of the net device (e.g. enp0s20f0u5); %E{interface} is
+# unset and expands to an empty string, which silently breaks the RUN command.
 LINUX_UDEV_RULES = """\
 SUBSYSTEM=="usb", ATTR{idVendor}=="2ca3", ATTR{idProduct}=="001f", MODE="0666"
-SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="0020", ENV{NM_UNMANAGED}="1", ENV{NM_AUTOCONNECT}="no", RUN+="/bin/sh -c 'ip -4 addr show dev %E{interface} 2>/dev/null | grep -q 192.168.60.1 || { ip link set %E{interface} up; ip addr add 192.168.60.1/24 dev %E{interface}; }'"
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="0020", ENV{NM_UNMANAGED}="1", ENV{NM_AUTOCONNECT}="no", RUN+="/bin/sh -c 'ip -4 addr show dev %k 2>/dev/null | grep -q 192.168.60.1 || { ip link set %k up; ip addr add 192.168.60.1/24 dev %k; }'"
 """
 
 LINUX_UDEV_RULES_PATH = Path("/etc/udev/rules.d/99-dji-goggles.rules")
@@ -169,10 +190,10 @@ def install_linux_udev_rules(path: Path = LINUX_UDEV_RULES_PATH) -> int:
 
 
 def check_linux_goggles_link(options: list[str] | None = None) -> int:
-    """Read-only G3 link check. 0 ready/custom IP, 1 no single G3, 2/3 address missing (root/user), 5 V2 only."""
+    """Read-only G3 link check. 0 ready/custom IP, 1 no single G3, 2/3 address missing or link down (root/user), 5 V2 only."""
     if options and any(opt == "--local-ip" or opt.startswith("--local-ip=") for opt in options):
         return 0  # Custom network configuration; nothing to set up
-    from apps.diagnostics import usb_device_count
+    from apps.diagnostics import goggles_usb_interface, usb_device_count
 
     try:
         count = usb_device_count("linux", model="all")
@@ -186,7 +207,11 @@ def check_linux_goggles_link(options: list[str] | None = None) -> int:
     except (OSError, ValueError):
         pass
     if _linux_local_ip_configured("192.168.60.1"):
-        return 0
+        interface = goggles_usb_interface()
+        # No RNDIS interface found (rare race) keeps the legacy behavior;
+        # an IP on a down link is unreachable, so the flag must be up.
+        if interface is None or _linux_goggles_link_up(interface):
+            return 0
     return 2 if _is_root() else 3
 
 
@@ -200,22 +225,30 @@ def setup_linux_goggles_link() -> int:
     if interface is None:
         print("Goggles 3 not connected; the udev rules will set the link on next plug-in.")
         return 0
-    if _linux_local_ip_configured("192.168.60.1"):
+    ip_configured = _linux_local_ip_configured("192.168.60.1")
+    if ip_configured and _linux_goggles_link_up(interface):
         print("192.168.60.1 is already on a local interface; udev rules are installed.")
         return 0
-    command = ["ip", "addr", "add", "192.168.60.1/24", "dev", interface]
-    try:
+    if ip_configured:
+        # Address present but link down: an address on a down link is
+        # unreachable, so bring the link up without re-adding the address.
         subprocess.run(["ip", "link", "set", interface, "up"], check=False, capture_output=True)
-        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.SubprocessError) as exc:
-        save_details(f"Linux link setup failed to run: {exc}")
-        print("The setup command could not be run. See the log for details.")
-        return 1
-    if result.returncode:
-        save_details(f"ip addr add {interface}: {result.stderr.strip()}")
-        print(f"Setup failed: {result.stderr.strip() or 'unknown error'}")
-        print(f"You can run it manually: sudo {' '.join(command)}")
-        return 1
+    else:
+        command = ["ip", "addr", "add", "192.168.60.1/24", "dev", interface]
+        try:
+            subprocess.run(["ip", "link", "set", interface, "up"], check=False, capture_output=True)
+            result = subprocess.run(
+                command, check=False, capture_output=True, text=True, timeout=15
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            save_details(f"Linux link setup failed to run: {exc}")
+            print("The setup command could not be run. See the log for details.")
+            return 1
+        if result.returncode:
+            save_details(f"ip addr add {interface}: {result.stderr.strip()}")
+            print(f"Setup failed: {result.stderr.strip() or 'unknown error'}")
+            print(f"You can run it manually: sudo {' '.join(command)}")
+            return 1
     # NM_UNMANAGED via udev is permanent; also stop NM for the current session.
     try:
         subprocess.run(
@@ -223,7 +256,10 @@ def setup_linux_goggles_link() -> int:
         )
     except OSError:
         pass
-    print(f"Assigned 192.168.60.1 to {interface}.")
+    if ip_configured:
+        print(f"Brought {interface} up; 192.168.60.1/24 was already assigned.")
+    else:
+        print(f"Assigned 192.168.60.1 to {interface}.")
     return 0
 
 
@@ -232,6 +268,7 @@ def _print_linux_link_instructions() -> None:
 
     interface = goggles_usb_interface() or "usb0"
     print("\nThe goggles link needs a one-time address on Linux:")
+    print(f"  sudo ip link set {interface} up")
     print(f"  sudo ip addr add 192.168.60.1/24 dev {interface}")
 
 

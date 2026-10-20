@@ -347,6 +347,7 @@ class LauncherTests(unittest.TestCase):
             patch.object(sys.stdin, "isatty", return_value=True),
             patch("apps.diagnostics.usb_device_count", side_effect=[1, 0]),
             patch.object(app_launcher, "_linux_local_ip_configured", return_value=True),
+            patch("apps.diagnostics.goggles_usb_interface", return_value=None),
             patch.object(app_launcher, "prepare_dependencies") as dependencies,
             patch("builtins.input", side_effect=["q"]),
         ):
@@ -361,6 +362,7 @@ class LauncherTests(unittest.TestCase):
             patch("apps.diagnostics.usb_device_count", side_effect=[1, 0, 1, 0]),
             patch.object(app_launcher, "_linux_local_ip_configured", side_effect=[False, True]),
             patch.object(app_launcher, "_is_root", return_value=True),
+            patch("apps.diagnostics.goggles_usb_interface", return_value=None),
             patch.object(app_launcher, "setup_linux_goggles_link", return_value=0) as setup,
             patch.object(sys, "stdout", output),
             patch.object(app_launcher, "prepare_dependencies") as dependencies,
@@ -380,6 +382,7 @@ class LauncherTests(unittest.TestCase):
             patch("apps.diagnostics.usb_device_count", side_effect=[1, 0, 1, 0]),
             patch.object(app_launcher, "_linux_local_ip_configured", side_effect=[False, True]),
             patch.object(app_launcher, "_is_root", return_value=False),
+            patch("apps.diagnostics.goggles_usb_interface", return_value=None),
             patch.object(app_launcher, "setup_linux_goggles_link") as setup,
             patch.object(sys, "stdout", output),
             patch.object(app_launcher, "prepare_dependencies") as dependencies,
@@ -389,6 +392,7 @@ class LauncherTests(unittest.TestCase):
         dependencies.assert_not_called()
         setup.assert_not_called()
         self.assertIn("sudo ip addr add 192.168.60.1/24", output.getvalue())
+        self.assertIn("sudo ip link set", output.getvalue())
 
     def test_linux_menu_without_headset_can_quit(self):
         with (
