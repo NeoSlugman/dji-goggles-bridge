@@ -14,10 +14,15 @@ class SetupLinuxTests(unittest.TestCase):
         self.assertIn('ATTR{idProduct}=="001f", MODE="0666"', rules)
         self.assertIn("NM_UNMANAGED", rules)
         self.assertIn("192.168.60.1/24", rules)
-        # %k expands to the net device's kernel name; %E{interface} is unset
-        # (udev sets INTERFACE, uppercase) and expands to an empty string,
-        # which silently broke the RUN command (no link-up, no IP assigned).
-        self.assertIn("dev %k", rules)
+        # %k expands to the net device's kernel name at event time, but on
+        # Fedora the RNDIS link is registered as usb0 and renamed (predictable
+        # naming) before the RUN command executes, so %k points at a missing
+        # device. The rule must resolve the current name at execution time
+        # from the stable USB devpath (%p) instead.
+        self.assertNotIn("%k", rules)
+        self.assertIn("$(dirname %p)", rules)
+        self.assertIn("ip link set", rules)
+        self.assertIn("ip addr add", rules)
         self.assertNotIn("%E{interface}", rules)
 
     def test_install_linux_udev_rules_writes_file_and_reloads(self):
@@ -29,16 +34,39 @@ class SetupLinuxTests(unittest.TestCase):
                 self.assertEqual(app_launcher.install_linux_udev_rules(path), 0)
             self.assertEqual(path.read_text(), app_launcher.LINUX_UDEV_RULES)
             run.assert_called_once_with(
-                ["udevadm", "control", "--reload-rules"], check=False, capture_output=True
+                ["udevadm", "control", "--reload-rules"],
+                check=False,
+                capture_output=True,
+                text=True,
             )
 
-    def test_install_linux_udev_rules_skips_reload_when_up_to_date(self):
+    def test_install_linux_udev_rules_reloads_even_when_up_to_date(self):
+        # udevd keeps its ruleset in memory, so even an up-to-date file must be
+        # reloaded to guarantee the running ruleset matches the file on disk.
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "99-dji-goggles.rules"
             path.write_text(app_launcher.LINUX_UDEV_RULES)
-            with patch.object(app_launcher.subprocess, "run") as run:
+            with patch.object(
+                app_launcher.subprocess, "run", return_value=Mock(returncode=0)
+            ) as run:
                 self.assertEqual(app_launcher.install_linux_udev_rules(path), 0)
-            run.assert_not_called()
+            run.assert_called_once_with(
+                ["udevadm", "control", "--reload-rules"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+    def test_install_linux_udev_rules_fails_when_reload_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "99-dji-goggles.rules"
+            path.write_text(app_launcher.LINUX_UDEV_RULES)
+            with patch.object(
+                app_launcher.subprocess,
+                "run",
+                return_value=Mock(returncode=1, stderr="Permission denied"),
+            ):
+                self.assertEqual(app_launcher.install_linux_udev_rules(path), 1)
 
     def test_setup_linux_goggles_link_installs_rules_and_assigns_address(self):
         with (

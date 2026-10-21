@@ -163,29 +163,51 @@ def _is_root() -> bool:
 
 # udev rules installed by the one-time Linux setup: rootless V2 USB access,
 # G3 auto-IP on every plug-in, and NM_UNMANAGED so NetworkManager leaves the link.
-# %k is the kernel name of the net device (e.g. enp0s20f0u5); %E{interface} is
-# unset and expands to an empty string, which silently breaks the RUN command.
+# The auto-IP script must not trust the device name at event time: on Fedora the
+# RNDIS link is registered as usb0 and renamed to a predictable name (e.g.
+# enp0s20f0u5) before the RUN command executes, so %k points at a device that no
+# longer exists ("Cannot find device", exit 1). It therefore resolves the CURRENT
+# name at execution time from the stable USB path: %p is the devpath
+# (devices/.../usb3/3-5/3-5:1.0/net/<name>), and dirname strips the volatile
+# <name> component, leaving the net/ directory that always lists the real name.
 LINUX_UDEV_RULES = """\
 SUBSYSTEM=="usb", ATTR{idVendor}=="2ca3", ATTR{idProduct}=="001f", MODE="0666"
-SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="0020", ENV{NM_UNMANAGED}="1", ENV{NM_AUTOCONNECT}="no", RUN+="/bin/sh -c 'ip -4 addr show dev %k 2>/dev/null | grep -q 192.168.60.1 || { ip link set %k up; ip addr add 192.168.60.1/24 dev %k; }'"
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="2ca3", ATTRS{idProduct}=="0020", ENV{NM_UNMANAGED}="1", ENV{NM_AUTOCONNECT}="no", RUN+="/bin/sh -c 'name=$(ls \\"/sys/$(dirname %p)\\" 2>/dev/null | head -n1); [ -n \\"$name\\" ] || exit 0; ip link set \\"$name\\" up; ip -4 addr show dev \\"$name\\" 2>/dev/null | grep -q 192.168.60.1 || ip addr add 192.168.60.1/24 dev \\"$name\\"'"
 """
 
 LINUX_UDEV_RULES_PATH = Path("/etc/udev/rules.d/99-dji-goggles.rules")
 
 
 def install_linux_udev_rules(path: Path = LINUX_UDEV_RULES_PATH) -> int:
-    """Write the goggles udev rules and reload udev; no-op when already installed."""
-    if path.exists() and path.read_text() == LINUX_UDEV_RULES:
-        return 0
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(LINUX_UDEV_RULES)
-    except OSError as exc:
-        save_details(f"udev rule install failed: {exc}")
-        print(f"Could not install the udev rules: {exc}")
+    """Write the goggles udev rules and reload udev.
+
+    The reload is always attempted, even when the file is already up to date:
+    udevd keeps its rule set in memory, so a correct file on disk does not
+    mean the loaded ruleset matches (a stale ruleset silently skips the
+    auto-IP on every plug-in).
+    """
+    wrote = False
+    if not (path.exists() and path.read_text() == LINUX_UDEV_RULES):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(LINUX_UDEV_RULES)
+            wrote = True
+        except OSError as exc:
+            save_details(f"udev rule install failed: {exc}")
+            print(f"Could not install the udev rules: {exc}")
+            return 1
+    reload_result = subprocess.run(
+        ["udevadm", "control", "--reload-rules"], check=False, capture_output=True, text=True
+    )
+    if reload_result.returncode:
+        save_details(f"udev rules reload failed: {reload_result.stderr.strip()}")
+        print("The udev rules are on disk, but udev could not load them (reload failed).")
+        print("Run: sudo udevadm control --reload-rules, then replug the goggles.")
         return 1
-    subprocess.run(["udevadm", "control", "--reload-rules"], check=False, capture_output=True)
-    print("Installed udev rules for the goggles.")
+    if wrote:
+        print("Installed udev rules for the goggles.")
+    else:
+        print("Udev rules already installed and loaded.")
     return 0
 
 
